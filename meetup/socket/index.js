@@ -5,7 +5,13 @@ import {v4 as uuid} from 'uuid'
 dotenv.config()
 
 const server = http.createServer()
-const io = new Server(server,{cors:{origin:"*"}})
+const clientOrigin = process.env.CLIENT_ORIGIN || "*"
+const io = new Server(server, {
+    cors: {
+        origin: clientOrigin,
+        methods: ["GET", "POST"]
+    }
+})
 const port = process.env.PORT || 5000
 
 server.on("error", (error) => {
