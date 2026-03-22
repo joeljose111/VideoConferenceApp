@@ -1,36 +1,88 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MeetUp Video Chat
 
-## Getting Started
+This app has 2 deployable services:
 
-First, run the development server:
+- Frontend: Next.js app in the project root
+- Backend: Socket.IO signaling server in `socket/`
+
+## 1) Local Setup
+
+### Frontend env
+
+Copy `.env.example` to `.env.local` and fill values:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cp .env.example .env.local
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Required frontend variables:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- `NEXT_PUBLIC_SOCKET_URL`
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+- `CLERK_SECRET_KEY`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Backend env
 
-## Learn More
+Copy `socket/.env.example` to `socket/.env` and fill values:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+cp socket/.env.example socket/.env
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Required backend variables:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `PORT` (default: `8000`)
+- `CLIENT_ORIGIN` (frontend URL, or comma-separated URLs)
 
-## Deploy on Vercel
+### Run both services
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Terminal 1:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+cd socket
+npm install
+npm run dev
+```
+
+Terminal 2:
+
+```bash
+npm install
+npm run dev
+```
+
+## 2) Separate Deployment (Recommended)
+
+Deploy frontend and backend as separate services.
+
+### Backend service (Socket.IO)
+
+- Root directory: `socket`
+- Build command: `npm install`
+- Start command: `npm run start`
+
+Backend environment variables:
+
+- `PORT` (set by most platforms automatically)
+- `CLIENT_ORIGIN=https://your-frontend-domain.com`
+
+Health endpoint:
+
+- `GET /health` returns `{ "status": "ok" }`
+
+### Frontend service (Next.js)
+
+- Root directory: project root
+- Build command: `npm install && npm run build`
+- Start command: `npm run start`
+
+Frontend environment variables:
+
+- `NEXT_PUBLIC_SOCKET_URL=https://your-backend-domain.com`
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=...`
+- `CLERK_SECRET_KEY=...`
+
+## 3) Render Blueprint (Optional)
+
+If you want both services provisioned in one action on Render, use `render.yaml`.
+It still creates two separate services, but from one deploy flow.

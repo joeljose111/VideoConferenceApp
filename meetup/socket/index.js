@@ -4,11 +4,32 @@ import dotenv from "dotenv"
 import {v4 as uuid} from 'uuid'
 dotenv.config()
 
-const server = http.createServer()
-const clientOrigin = process.env.CLIENT_ORIGIN || "*"
+const allowedOrigins = (process.env.CLIENT_ORIGIN || "*")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+
+const server = http.createServer((req, res) => {
+    if (req.url === "/health") {
+        res.writeHead(200, { "Content-Type": "application/json" })
+        res.end(JSON.stringify({ status: "ok" }))
+        return
+    }
+
+    res.writeHead(200, { "Content-Type": "text/plain" })
+    res.end("Socket server is running")
+})
+
 const io = new Server(server, {
     cors: {
-        origin: clientOrigin,
+        origin: (origin, callback) => {
+            if (!origin || allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
+                callback(null, true)
+                return
+            }
+
+            callback(new Error("CORS blocked for this origin"), false)
+        },
         methods: ["GET", "POST"]
     }
 })

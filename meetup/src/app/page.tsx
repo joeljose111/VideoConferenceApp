@@ -8,7 +8,8 @@ import Peer from "simple-peer";
 import type { Instance as PeerInstance } from "simple-peer";
 import type { SignalData } from "simple-peer";
 
-const socket = io(process.env.NEXT_PUBLIC_SOCKET_URL!,{
+const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:8000"
+const socket = io(socketUrl,{
   transports:["websocket"]
 })
 
