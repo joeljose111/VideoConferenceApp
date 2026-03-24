@@ -1,294 +1,362 @@
 'use client'
-import Navbar from "./components/Navbar";
-import {io} from "socket.io-client";
-import { useCallback, useEffect } from "react";
-import { useState,useRef } from "react";
-import {MdMic, MdMicOff, MdVideocam,MdVideocamOff} from "react-icons/md";
-import Peer from "simple-peer";
-import type { Instance as PeerInstance } from "simple-peer";
-import type { SignalData } from "simple-peer";
 
-const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:8000"
-const socket = io(socketUrl,{
-  transports:["websocket"]
-})
+import { useCallback, useEffect, useRef, useState } from "react"
+import Peer from "simple-peer"
+import type { Instance as PeerInstance } from "simple-peer"
+import type { SignalData } from "simple-peer"
+import { io } from "socket.io-client"
+import type { Socket } from "socket.io-client"
+import { MdMic, MdMicOff, MdVideocam, MdVideocamOff } from "react-icons/md"
+import Navbar from "./components/Navbar"
+
+const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:8000"
+const MAX_USERS = 3
+
+type RemoteVideo = {
+  socketId: string
+  stream: MediaStream
+}
+
+type RoomJoinedPayload = {
+  roomId: string
+  socketId: string
+  participants: string[]
+  maxUsers: number
+}
+
+type UserPayload = {
+  socketId: string
+}
+
+type SignalPayload = {
+  from: string
+  signal: SignalData
+}
+
+function VideoTile({ stream, label, muted = false }: { stream: MediaStream | null; label: string; muted?: boolean }) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    if (!videoRef.current) {
+      return
+    }
+
+    if (stream) {
+      videoRef.current.srcObject = stream
+      videoRef.current.onloadedmetadata = () => {
+        void videoRef.current?.play().catch(() => {})
+      }
+    } else {
+      videoRef.current.srcObject = null
+    }
+  }, [stream])
+
+  return (
+    <div className="relative h-56 overflow-hidden rounded-lg border border-white/10 bg-black md:h-64">
+      {stream ? (
+        <video ref={videoRef} autoPlay playsInline muted={muted} className="h-full w-full object-cover" />
+      ) : (
+        <div className="flex h-full items-center justify-center text-sm text-white/70">Waiting for participant...</div>
+      )}
+      <p className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-xs">{label}</p>
+    </div>
+  )
+}
 
 export default function Home() {
+  const [roomId, setRoomId] = useState("")
+  const [activeRoom, setActiveRoom] = useState("")
+  const [status, setStatus] = useState("")
+  const [isJoining, setIsJoining] = useState(false)
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null)
+  const [remoteVideos, setRemoteVideos] = useState<RemoteVideo[]>([])
+  const [isMicOn, setIsMicOn] = useState(true)
+  const [isCamOn, setIsCamOn] = useState(true)
 
-  const [localStream, setLocalStream] = useState<MediaStream | null >(null)
-  const [remoteStream, setRemoteStream] = useState<MediaStream | null >(null)
-  const [remoteStreamThird, setRemoteStreamThird] = useState<MediaStream | null >(null)
+  const socketRef = useRef<Socket | null>(null)
+  const peersRef = useRef<Map<string, PeerInstance>>(new Map())
+  const localStreamRef = useRef<MediaStream | null>(null)
 
-  const [isMicOn,setIsMicOn] = useState(true)
-  const [isVidOn,setIsVidOn] = useState(true)
-  const [isConnected, setIsConnected] = useState(false)
-  const [isWaiting, setIsWaiting] = useState(false)
-  const peerRef = useRef<PeerInstance | null>(null)
-  const pendingSignalsRef = useRef<SignalData[]>([])
+  useEffect(() => {
+    localStreamRef.current = localStream
+  }, [localStream])
 
-  const stopStream = useCallback((stream: MediaStream | null) => {
-    stream?.getTracks().forEach((track) => track.stop())
+  const upsertRemoteVideo = useCallback((socketId: string, stream: MediaStream) => {
+    setRemoteVideos((prev) => {
+      const found = prev.find((item) => item.socketId === socketId)
+      if (found) {
+        return prev.map((item) => (item.socketId === socketId ? { socketId, stream } : item))
+      }
+      return [...prev, { socketId, stream }]
+    })
   }, [])
 
-  const createPeer = useCallback((initiator: boolean, stream: MediaStream)=>{
-    const peer = new Peer({
-      initiator,
-      trickle: false,
-      stream
-    })
+  const removeRemoteVideo = useCallback((socketId: string) => {
+    setRemoteVideos((prev) => prev.filter((item) => item.socketId !== socketId))
+  }, [])
 
-    peer.on('signal', (data) => {
-      if (initiator) {
-        socket.emit('offer', data)
-      } else {
-        socket.emit('answer', data)
+  const destroyAllPeers = useCallback(() => {
+    peersRef.current.forEach((peer) => peer.destroy())
+    peersRef.current.clear()
+    setRemoteVideos([])
+  }, [])
+
+  const stopLocalMedia = useCallback(() => {
+    localStreamRef.current?.getTracks().forEach((track) => track.stop())
+    localStreamRef.current = null
+    setLocalStream(null)
+  }, [])
+
+  const createPeer = useCallback(
+    (remoteSocketId: string, initiator: boolean, stream: MediaStream) => {
+      const existingPeer = peersRef.current.get(remoteSocketId)
+      if (existingPeer) {
+        return existingPeer
       }
-    })
 
-    peer.on('stream', (stream) => {
-      setRemoteStream(stream)
-      setIsConnected(true)
-      setIsWaiting(false)
-    })
-
-    peer.on('error', (err) => {
-      console.error('Peer error:', err)
-    })
-
-    peer.on('close', () => {
-      setIsConnected(false)
-      setRemoteStream(null)
-      setIsWaiting(false)
-      pendingSignalsRef.current = []
-      peerRef.current = null
-    })
-
-    if (pendingSignalsRef.current.length > 0) {
-      pendingSignalsRef.current.forEach((signal) => {
-        peer.signal(signal)
+      const peer = new Peer({
+        initiator,
+        trickle: false,
+        stream,
       })
-      pendingSignalsRef.current = []
-    }
 
-    return peer
-  },[])
-
-  const getMediaStream = useCallback( async (faceMode?: string)=>{
-    if(localStream){
-      return localStream
-    }
-
-    try{
-      const devices = await navigator.mediaDevices.enumerateDevices()
-      const videoDevices = devices.filter(device => device.kind == 'videoinput')
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio:true,
-        video:{
-          width:{min:640,ideal:1280,max:1920},
-          height:{min:360,ideal:720,max:1080},
-          frameRate:{min:16,ideal:30,max:30},
-          facingMode:videoDevices.length > 0 ? faceMode: undefined
-        }
+      peer.on("signal", (signalData) => {
+        socketRef.current?.emit("signal", {
+          to: remoteSocketId,
+          signal: signalData,
+        })
       })
-      setLocalStream(stream)
-      return stream
-    } catch(error) {
-        console.log("failed to get stream",error)
-        setLocalStream(null)
-        return null
-    }
-  },[localStream])
 
-  useEffect(()=>{
-    const handleMatched = (data: { initiator: boolean }) => {
-      setIsWaiting(true)
-      getMediaStream().then((stream) => {
-        if (stream) {
-          peerRef.current?.destroy()
-          pendingSignalsRef.current = []
-          peerRef.current = createPeer(data.initiator, stream)
-        }
+      peer.on("stream", (remoteStream) => {
+        upsertRemoteVideo(remoteSocketId, remoteStream)
       })
+
+      peer.on("close", () => {
+        peersRef.current.delete(remoteSocketId)
+        removeRemoteVideo(remoteSocketId)
+      })
+
+      peer.on("error", (error) => {
+        console.error("Peer error:", error)
+      })
+
+      peersRef.current.set(remoteSocketId, peer)
+      return peer
+    },
+    [removeRemoteVideo, upsertRemoteVideo]
+  )
+
+  const getOrCreateSocket = useCallback(() => {
+    if (socketRef.current) {
+      return socketRef.current
     }
 
-    const handleOffer = (data: SignalData) => {
-      if (peerRef.current) {
-        peerRef.current.signal(data)
+    const socket = io(SOCKET_URL, {
+      transports: ["websocket"],
+    })
+
+    socket.on("room-joined", ({ roomId: joinedRoomId, participants, maxUsers }: RoomJoinedPayload) => {
+      setActiveRoom(joinedRoomId)
+      setIsJoining(false)
+      setStatus(`Joined room ${joinedRoomId} (${participants.length + 1}/${maxUsers})`)
+
+      const stream = localStreamRef.current
+      if (!stream) {
         return
       }
 
-      pendingSignalsRef.current.push(data)
-    }
+      participants.forEach((participantId) => {
+        createPeer(participantId, true, stream)
+      })
+    })
 
-    const handleAnswer = (data: SignalData) => {
-      if (peerRef.current) {
-        peerRef.current.signal(data)
+    socket.on("user-joined", ({ socketId }: UserPayload) => {
+      if (peersRef.current.has(socketId)) {
+        return
       }
-    }
 
-    const handleIceCandidate = (data: SignalData) => {
-      if (peerRef.current) {
-        peerRef.current.signal(data)
+      setStatus("A participant joined the room.")
+    })
+
+    socket.on("signal", ({ from, signal }: SignalPayload) => {
+      const stream = localStreamRef.current
+      if (!stream) {
+        return
       }
-    }
 
-    const handlePartnerDisconnected = () => {
-      setIsConnected(false)
-      setRemoteStream(null)
-      setIsWaiting(false)
-      pendingSignalsRef.current = []
-      if (peerRef.current) {
-        peerRef.current.destroy()
-        peerRef.current = null
+      let peer = peersRef.current.get(from)
+      if (!peer) {
+        peer = createPeer(from, false, stream)
       }
+
+      try {
+        peer.signal(signal)
+      } catch (error) {
+        console.warn("Ignored incompatible signal state:", error)
+      }
+    })
+
+    socket.on("user-left", ({ socketId }: UserPayload) => {
+      const peer = peersRef.current.get(socketId)
+      if (peer) {
+        peer.destroy()
+      }
+      peersRef.current.delete(socketId)
+      removeRemoteVideo(socketId)
+      setStatus("A participant left the room.")
+    })
+
+    socket.on("room-full", ({ roomId: fullRoomId, maxUsers }: { roomId: string; maxUsers: number }) => {
+      setIsJoining(false)
+      setStatus(`Room ${fullRoomId} is full (max ${maxUsers}).`)
+    })
+
+    socket.on("join-error", ({ message }: { message: string }) => {
+      setIsJoining(false)
+      setStatus(message)
+    })
+
+    socketRef.current = socket
+    return socket
+  }, [createPeer, removeRemoteVideo])
+
+  const ensureLocalStream = useCallback(async () => {
+    if (localStreamRef.current) {
+      return localStreamRef.current
     }
 
-    socket.on('matched', handleMatched)
-    socket.on('offer', handleOffer)
-    socket.on('answer', handleAnswer)
-    socket.on('ice-candidate', handleIceCandidate)
-    socket.on('partner-disconnected', handlePartnerDisconnected)
-
-    return () => {
-      socket.off('matched', handleMatched)
-      socket.off('offer', handleOffer)
-      socket.off('answer', handleAnswer)
-      socket.off('ice-candidate', handleIceCandidate)
-      socket.off('partner-disconnected', handlePartnerDisconnected)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true,
+      })
+      setLocalStream(stream)
+      localStreamRef.current = stream
+      const videoTrack = stream.getVideoTracks()[0]
+      const audioTrack = stream.getAudioTracks()[0]
+      setIsCamOn(videoTrack?.enabled ?? true)
+      setIsMicOn(audioTrack?.enabled ?? true)
+      return stream
+    } catch {
+      setStatus("Camera/Mic permission denied.")
+      return null
     }
-  },[createPeer, getMediaStream])
+  }, [])
 
-  useEffect(()=>{
-    if(localStream){
-      const videoTrack = localStream.getVideoTracks()[0]
-      setIsVidOn(videoTrack.enabled)
-      const audioTrack = localStream.getAudioTracks()[0]
-      setIsMicOn(audioTrack.enabled)
+  const handleJoin = useCallback(async () => {
+    if (isJoining) {
+      return
     }
-  },[localStream])
 
-  const toggleCamera = ()=>{
-    if(localStream){
-      const videoTrack = localStream.getVideoTracks()[0]
-      videoTrack.enabled = !videoTrack.enabled
-      setIsVidOn(videoTrack.enabled)
+    const normalizedRoomId = roomId.trim().toLowerCase()
+    if (!normalizedRoomId) {
+      setStatus("Please enter a room id.")
+      return
     }
-  }
-  const toggleMic = ()=>{
-    if(localStream){
-      const audioTrack = localStream.getAudioTracks()[0]
-      audioTrack.enabled = !audioTrack.enabled
-      setIsMicOn(audioTrack.enabled)
-    }
-  }
 
-  const handleCall = async ()=>{
-    if (isConnected || isWaiting) return
-
-    const stream = await getMediaStream()
-
+    const stream = await ensureLocalStream()
     if (!stream) {
       return
     }
 
-    setIsWaiting(true)
-    socket.emit("start")
-  }
-
-  const handleEndCall = () => {
-    if (peerRef.current) {
-      peerRef.current.destroy()
-      peerRef.current = null
+    if (activeRoom) {
+      socketRef.current?.emit("leave-room")
+      destroyAllPeers()
+      setRemoteVideos([])
     }
-    pendingSignalsRef.current = []
-    stopStream(localStream)
-    setIsConnected(false)
-    setLocalStream(null)
-    setRemoteStream(null)
-    setIsWaiting(false)
-    socket.emit('leave')
-  }
+
+    setIsJoining(true)
+    setStatus("Joining room...")
+
+    const socket = getOrCreateSocket()
+    socket.emit("join-room", { roomId: normalizedRoomId })
+  }, [activeRoom, destroyAllPeers, ensureLocalStream, getOrCreateSocket, isJoining, roomId])
+
+  const handleLeave = useCallback(() => {
+    socketRef.current?.emit("leave-room")
+    destroyAllPeers()
+    stopLocalMedia()
+    setActiveRoom("")
+    setStatus("You left the room.")
+  }, [destroyAllPeers, stopLocalMedia])
+
+  const toggleMic = useCallback(() => {
+    const audioTrack = localStreamRef.current?.getAudioTracks()[0]
+    if (!audioTrack) {
+      return
+    }
+    audioTrack.enabled = !audioTrack.enabled
+    setIsMicOn(audioTrack.enabled)
+  }, [])
+
+  const toggleCam = useCallback(() => {
+    const videoTrack = localStreamRef.current?.getVideoTracks()[0]
+    if (!videoTrack) {
+      return
+    }
+    videoTrack.enabled = !videoTrack.enabled
+    setIsCamOn(videoTrack.enabled)
+  }, [])
 
   useEffect(() => {
     return () => {
-      if (peerRef.current) {
-        peerRef.current.destroy()
-      }
-      stopStream(localStream)
+      socketRef.current?.emit("leave-room")
+      socketRef.current?.disconnect()
+      socketRef.current = null
+      destroyAllPeers()
+      stopLocalMedia()
     }
-  }, [localStream, stopStream])
-
-  function VideoContainer({ stream, muted = false, className = "" }: { stream: MediaStream | null, muted?: boolean, className?: string }) {
-    const videoRef = useRef<HTMLVideoElement>(null)
-    useEffect(()=>{
-      if(videoRef.current && stream){
-        videoRef.current.srcObject = stream
-        videoRef.current.onloadedmetadata = () => {
-          void videoRef.current?.play().catch(() => {})
-        }
-      }
-    },[stream])
-    return(<video className={`rounded border bg-black object-cover ${className}`} ref={videoRef} autoPlay playsInline muted={muted} />);
-  }
+  }, [destroyAllPeers, stopLocalMedia])
 
   return (
     <>
-    <Navbar show={true}/>
-    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4">
-      {!isConnected && !isWaiting && (
-        <div onClick={handleCall} className="cursor-pointer bg-blue-500 hover:bg-blue-600 px-8 py-4 rounded-lg text-xl font-bold transition-colors">
-          Start Video Chat
-        </div>
-      )}
+      <Navbar show={true} />
+      <div className="min-h-screen bg-gray-900 px-4 pb-8 pt-24 text-white">
+        <div className="mx-auto max-w-6xl space-y-4">
+          <div className="rounded-lg border border-white/10 bg-black/40 p-4">
+            <h1 className="text-2xl font-semibold">Enter the room ID </h1>
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <input
+                value={roomId}
+                onChange={(e) => setRoomId(e.target.value)}
+                placeholder="Room id"
+                className="w-full rounded-md border border-white/15 bg-black/50 px-3 py-2 outline-none ring-blue-500 focus:ring"
+              />
+              <button
+                onClick={handleJoin}
+                disabled={isJoining}
+                className="rounded-md bg-blue-600 px-4 py-2 font-semibold hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isJoining ? "Joining..." : "Join"}
+              </button>
+              <button
+                onClick={handleLeave}
+                disabled={!activeRoom}
+                className="rounded-md bg-red-600 px-4 py-2 font-semibold hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                Leave
+              </button>
+            </div>
 
-      {(localStream || isWaiting || isConnected) && (
-        <div className="mt-8 flex flex-col items-center space-y-4">
-          <div className="flex flex-col gap-4 md:flex-row">
-            <div className="relative overflow-hidden rounded border border-white/10 bg-neutral-950">
-              <VideoContainer stream={localStream} muted={true} className="h-48 w-64 md:h-64 md:w-80" />
-              <p className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-sm">You</p>
-            </div>
-            <div className="relative flex h-48 w-64 items-center justify-center overflow-hidden rounded border border-white/10 bg-neutral-950 md:h-64 md:w-80">
-              {remoteStream ? (
-                <VideoContainer stream={remoteStream} className="h-48 w-64 md:h-64 md:w-80" />
-              ) : (
-                <div className="text-center text-sm text-white/70">
-                  <div className="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-b-2 border-white" />
-                  <p>{isWaiting ? "Finding a partner..." : "Waiting for remote video..."}</p>
-                </div>
-              )}
-              <p className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-sm">Partner</p>
-            </div>
-
-            <div className="relative flex h-48 w-64 items-center justify-center overflow-hidden rounded border border-white/10 bg-neutral-950 md:h-64 md:w-80">
-              {remoteStream ? (
-                <VideoContainer stream={remoteStream} className="h-48 w-64 md:h-64 md:w-80" />
-              ) : (
-                <div className="text-center text-sm text-white/70">
-                  <div className="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-b-2 border-white" />
-                  <p>{isWaiting ? "Finding a partner..." : "Waiting for remote video..."}</p>
-                </div>
-              )}
-              <p className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-sm">Partner</p>
-            </div>
+            {activeRoom && <p className="text-xs text-white/60">Active room: {activeRoom}</p>}
           </div>
 
-          {(isWaiting || isConnected) && (
-          <div className="flex items-center space-x-4">
-            <button onClick={toggleMic} className="p-3 bg-gray-700 hover:bg-gray-600 rounded-full transition-colors">
-              {isMicOn ? <MdMic size={24}/> : <MdMicOff size={24}/>}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <VideoTile stream={localStream} muted={true} label="You" />
+            <VideoTile stream={remoteVideos[0]?.stream ?? null} label="Participant 2" />
+            <VideoTile stream={remoteVideos[1]?.stream ?? null} label="Participant 3" />
+          </div>
+
+          <div className="flex gap-3">
+            <button onClick={toggleMic} className="rounded-full bg-gray-700 p-3 hover:bg-gray-600">
+              {isMicOn ? <MdMic size={24} /> : <MdMicOff size={24} />}
             </button>
-            <button className="px-6 py-3 bg-red-500 hover:bg-red-600 text-white rounded-lg font-semibold transition-colors" onClick={handleEndCall}>
-              End Call
-            </button>
-            <button onClick={toggleCamera} className="p-3 bg-gray-700 hover:bg-gray-600 rounded-full transition-colors">
-              {isVidOn ? <MdVideocam size={24}/> : <MdVideocamOff size={24}/>}
+            <button onClick={toggleCam} className="rounded-full bg-gray-700 p-3 hover:bg-gray-600">
+              {isCamOn ? <MdVideocam size={24} /> : <MdVideocamOff size={24} />}
             </button>
           </div>
-          )}
         </div>
-      )}
-    </div>
+      </div>
     </>
-  );
+  )
 }

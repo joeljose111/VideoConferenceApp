@@ -1,8 +1,10 @@
 import http from "http"
-import {Server} from "socket.io"
+import { Server } from "socket.io"
 import dotenv from "dotenv"
-import {v4 as uuid} from 'uuid'
+
 dotenv.config()
+
+const MAX_ROOM_SIZE = 3
 
 const allowedOrigins = (process.env.CLIENT_ORIGIN || "*")
     .split(",")
@@ -34,6 +36,29 @@ const io = new Server(server, {
     }
 })
 const port = process.env.PORT || 5000
+const rooms = new Map()
+const socketToRoom = new Map()
+
+const leaveRoom = (socket) => {
+    const roomId = socketToRoom.get(socket.id)
+
+    if (!roomId) {
+        return
+    }
+
+    const members = rooms.get(roomId)
+
+    if (members) {
+        members.delete(socket.id)
+        if (members.size === 0) {
+            rooms.delete(roomId)
+        }
+    }
+
+    socketToRoom.delete(socket.id)
+    socket.leave(roomId)
+    socket.to(roomId).emit("user-left", { socketId: socket.id })
+}
 
 server.on("error", (error) => {
     if (error.code === "EADDRINUSE") {
@@ -45,95 +70,64 @@ server.on("error", (error) => {
     process.exit(1)
 })
 
-var waitingQueue = []
-const activePairs = new Map()
-const sockets = new Map() // Store socket objects by ID
-
-const removeFromQueue = (socketId) => {
-    waitingQueue = waitingQueue.filter((queuedSocketId) => queuedSocketId !== socketId)
-}
-
-const cleanupPair = (socketId, shouldNotifyPartner = true) => {
-    const partnerId = activePairs.get(socketId)
-
-    if (!partnerId) {
-        removeFromQueue(socketId)
-        return
-    }
-
-    const partnerSocket = sockets.get(partnerId)
-
-    activePairs.delete(socketId)
-    activePairs.delete(partnerId)
-    removeFromQueue(socketId)
-
-    if (shouldNotifyPartner) {
-        partnerSocket?.emit("partner-disconnected")
-    }
-}
-
-io.on("connection",(socket)=>{
-    console.log("sockets: ", socket.id, waitingQueue)
-    sockets.set(socket.id, socket) // Store socket object
-
-    socket.on("start",()=>{
-        removeFromQueue(socket.id)
-
-        if(waitingQueue.length>1){
-            const partnerId = waitingQueue.shift()
-            const partnerSocket = sockets.get(partnerId)
-
-            if (!partnerId || !partnerSocket) {
-                return
-            }
-
-            const roomId = uuid()
-            activePairs.set(socket.id, partnerId)
-            activePairs.set(partnerId, socket.id)
-            socket.emit("matched",{roomId, initiator: true})
-            partnerSocket.emit("matched",{roomId, initiator: false})
+io.on("connection", (socket) => {
+    socket.on("join-room", ({ roomId }) => {
+        if (roomId.trim().length === 0) {
+            socket.emit("join-error", { message: "Room id is required." })
+            return
         }
-        else{
-            console.log("adding")
-            waitingQueue.push(socket.id)
-            console.log("sockets: ",  waitingQueue)
+
+        const normalizedRoomId = roomId
+
+        leaveRoom(socket)
+
+        if (!rooms.has(roomId)) {
+            rooms.set(roomId, new Set())
         }
+
+        const members = rooms.get(roomId)
+
+        if (members.size >= MAX_ROOM_SIZE) {
+            socket.emit("room-full", { roomId: roomId, maxUsers: MAX_ROOM_SIZE })
+            return
+        }
+
+        const participants = [...members]
+
+        members.add(socket.id)
+        socketToRoom.set(socket.id, roomId)
+        socket.join(roomId)
+
+        socket.emit("room-joined", {
+            roomId: roomId,
+            socketId: socket.id,
+            participants,
+            maxUsers: MAX_ROOM_SIZE
+        })
+
+        socket.to(roomId).emit("user-joined", { socketId: socket.id })
     })
 
-    socket.on("offer", (data) => {
-        const partnerId = activePairs.get(socket.id)
-        if (partnerId) {
-            const partnerSocket = sockets.get(partnerId)
-            partnerSocket?.emit("offer", data)
+    socket.on("signal", ({ to, signal }) => {
+        if (typeof to !== "string" || !signal) {
+            return
         }
+
+        io.to(to).emit("signal", {
+            from: socket.id,
+            signal
+        })
     })
 
-    socket.on("answer", (data) => {
-        const partnerId = activePairs.get(socket.id)
-        if (partnerId) {
-            const partnerSocket = sockets.get(partnerId)
-            partnerSocket?.emit("answer", data)
-        }
-    })
-
-    socket.on("ice-candidate", (data) => {
-        const partnerId = activePairs.get(socket.id)
-        if (partnerId) {
-            const partnerSocket = sockets.get(partnerId)
-            partnerSocket?.emit("ice-candidate", data)
-        }
-    })
-
-    socket.on("leave", () => {
-        cleanupPair(socket.id)
+    socket.on("leave-room", () => {
+        leaveRoom(socket)
     })
 
     socket.on("disconnect", () => {
-        cleanupPair(socket.id)
-        sockets.delete(socket.id) // Remove socket object
+        leaveRoom(socket)
     })
 })
 
-server.listen(port,()=>{
-    console.log("server is running at: ",port)
+server.listen(port, () => {
+    console.log("server is running at:", port)
 })

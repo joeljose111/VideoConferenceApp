@@ -2,7 +2,7 @@
 import React from 'react'
 import {motion} from "motion/react"
 import { Sparkle } from 'lucide-react'
-function Navbar({show}:{show:Boolean}) {
+function Navbar({show}:{show:boolean}) {
   if(!show){
     return null
   }
