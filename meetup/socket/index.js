@@ -4,7 +4,6 @@ import dotenv from "dotenv"
 
 dotenv.config()
 
-const MAX_ROOM_SIZE = 3
 
 const allowedOrigins = (process.env.CLIENT_ORIGIN || "*")
     .split(",")
@@ -36,8 +35,8 @@ const io = new Server(server, {
     }
 })
 const port = process.env.PORT || 5000
-const rooms = new Map()
-const socketToRoom = new Map()
+const rooms = new Map() // roomid to socketid
+const socketToRoom = new Map() //socketid to room
 
 const leaveRoom = (socket) => {
     const roomId = socketToRoom.get(socket.id)
@@ -77,18 +76,14 @@ io.on("connection", (socket) => {
             return
         }
 
-        const normalizedRoomId = roomId
-
-        leaveRoom(socket)
-
         if (!rooms.has(roomId)) {
             rooms.set(roomId, new Set())
         }
 
         const members = rooms.get(roomId)
 
-        if (members.size >= MAX_ROOM_SIZE) {
-            socket.emit("room-full", { roomId: roomId, maxUsers: MAX_ROOM_SIZE })
+        if (members.size >= 3) {
+            socket.emit("room-full", { roomId: roomId, maxUsers: 3 })
             return
         }
 
@@ -102,7 +97,7 @@ io.on("connection", (socket) => {
             roomId: roomId,
             socketId: socket.id,
             participants,
-            maxUsers: MAX_ROOM_SIZE
+            maxUsers: 3
         })
 
         socket.to(roomId).emit("user-joined", { socketId: socket.id })
