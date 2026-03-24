@@ -17,6 +17,8 @@ export default function Home() {
 
   const [localStream, setLocalStream] = useState<MediaStream | null >(null)
   const [remoteStream, setRemoteStream] = useState<MediaStream | null >(null)
+  const [remoteStreamThird, setRemoteStreamThird] = useState<MediaStream | null >(null)
+
   const [isMicOn,setIsMicOn] = useState(true)
   const [isVidOn,setIsVidOn] = useState(true)
   const [isConnected, setIsConnected] = useState(false)
@@ -246,6 +248,18 @@ export default function Home() {
               <VideoContainer stream={localStream} muted={true} className="h-48 w-64 md:h-64 md:w-80" />
               <p className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-sm">You</p>
             </div>
+            <div className="relative flex h-48 w-64 items-center justify-center overflow-hidden rounded border border-white/10 bg-neutral-950 md:h-64 md:w-80">
+              {remoteStream ? (
+                <VideoContainer stream={remoteStream} className="h-48 w-64 md:h-64 md:w-80" />
+              ) : (
+                <div className="text-center text-sm text-white/70">
+                  <div className="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-b-2 border-white" />
+                  <p>{isWaiting ? "Finding a partner..." : "Waiting for remote video..."}</p>
+                </div>
+              )}
+              <p className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-sm">Partner</p>
+            </div>
+
             <div className="relative flex h-48 w-64 items-center justify-center overflow-hidden rounded border border-white/10 bg-neutral-950 md:h-64 md:w-80">
               {remoteStream ? (
                 <VideoContainer stream={remoteStream} className="h-48 w-64 md:h-64 md:w-80" />

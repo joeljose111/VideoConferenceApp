@@ -79,7 +79,7 @@ io.on("connection",(socket)=>{
     socket.on("start",()=>{
         removeFromQueue(socket.id)
 
-        if(waitingQueue.length>0){
+        if(waitingQueue.length>1){
             const partnerId = waitingQueue.shift()
             const partnerSocket = sockets.get(partnerId)
 
